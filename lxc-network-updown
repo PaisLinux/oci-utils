@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# @Author: Andres Arias <aarias>
+# @Date:   Sat Jan 14 18:18:52 UTC 2023
+# @Email:  a.arias@paislinux.es
+# @Last modified by:   aarias
+# @License: GPL-2.0
+#set -e -x
+
+# Defaults
+CONFIG=/usr/local/etc/lcx/network
+RETRY=15
+
+# Some Basics
+MYSELF=$(basename $0)
+MYDIR=$(dirname $0)
+REALDIR=$(realpath -e "$MYDIR")
+
+
+# In case of up script:
+# We need to fork ourself or we can be blocked forewer in a loop
+if [[ "${LXC_HOOK_TYPE}" = "up" ]] && [[ "$1" != "--" ]] 
+then
+	coproc "${REALDIR}/${MYSELF}" --
+	disown -a
+	exit 0
+fi
+
+
+# Some functions
+
+function wait_for_ip() {
+	# See if we already have the IP assigned
+	# Or wait for it $RETRY times
+
+	CONTAINER_IP=$(lxc-info "${LXC_NAME}" -iH 2>/dev/null)
+	while [[ -z "$CONTAINER_IP" ]] && [[ "$RETRY" -gt 0 ]]
+	do
+		RETRY=$(( "$RETRY" - 1 ))
+		sleep 1
+		CONTAINER_IP=$(lxc-info "${LXC_NAME}" -iH 2>/dev/null)
+	done
+}
+
+date >>/tmp/${LXC_NAME}.${LXC_HOOK_TYPE}.log
+# Sleep a couple of seconds to allow container to start
+if [[ "${LXC_HOOK_TYPE}" = "up" ]]
+then
+	sleep 5
+fi
+env >>/tmp/${LXC_NAME}.${LXC_HOOK_TYPE}.log
+
+# Check if exists and then run the network setup script
+if [[ -x "${CONFIG}/${LXC_NAME}.${LXC_HOOK_TYPE}" ]]
+then
+	wait_for_ip
+
+	echo Container IP: $CONTAINER_IP >>/tmp/${LXC_NAME}.${LXC_HOOK_TYPE}.log
+	# Check if we have IP, if not just exit
+	if [[ -z "$CONTAINER_IP" ]]
+	then
+		exit 0
+	fi
+	"${CONFIG}/${LXC_NAME}.{$LXC_HOOK_TYPE}"
+fi
+
