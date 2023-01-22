@@ -1,0 +1,86 @@
+#!/bin/bash
+#
+# ----------------------------------------------------------------------------
+# Project: oci-certs
+# File: /oci-certificate
+# Description: OCI certificate upload script
+# Created Date: Saturday, January 21st 2023, 1:59:05 pm
+# Author: Andres Arias
+# Email: a.arias@paislinux.es
+# 
+# Copyright (c) 2023 PaisLinux
+# GNU General Public License v2.0 only
+# 
+# -----
+# HISTORY:
+# Date      	By      	Comments
+# ----------	--------	--------------------------------------------------
+# ----------------------------------------------------------------------------
+
+
+# Defaults
+CONFIG=/usr/local/etc/oci-certificate.conf
+
+# Some Basics
+MYSELF=$(basename $0)
+MYDIR=$(dirname $0)
+REALDIR=$(realpath -e "$MYDIR")
+
+# Check if we have been provided with a alternative config file as an argument
+if [[ -n "$1" ]] && [[ -r "$1" ]]
+then
+    CONFIG="$1"
+fi
+
+# Lets load the config file or exit otherwise
+
+if [[ -r "$CONFIG" ]]
+then
+    source "$CONFIG"
+else
+    echo "No config file found or is not readable by me." >&2
+    exit 1
+fi
+
+# some functions
+function load_certifcate(){
+    CERT=$(cat "$CERT_FN")
+    KEY=$(cat "$KEY_FN")
+    CHAIN=$(cat "$ROOT_CA_FN" "$CA_CERT_FN")
+}
+
+
+# Check if the certificate already exists in the compartment
+
+# List certificates in the compartment
+CERTIFICATE_LIST=$(oci certs-mgmt certificate list --compartment-id "$COMPARTMENT" --all)
+
+# Choose certificate with the same name
+OCI_CERT_OCID=$(echo "${CERTIFICATE_LIST}" | jq -r --arg CN "$CERTIFICATE_NAME" '.data.items | map(select(.name == $CN)) |.[]| .id')
+
+# If we already has a version of the certificate deploye deployed
+if [[ -n "$OCI_CERT_OCID" ]]
+then
+    # Lookup for its serial number
+    OCI_CERT_SERIAL=$(echo "${CERTIFICATE_LIST}" | jq -r --arg CN "$CERTIFICATE_NAME" '.data.items | map(select(.name == $CN)) |.[]| ."current-version-summary"."serial-number"')
+    # Lookup serialnumber of newly generated certificate
+    CERT_SERIAL_HEXA=$(openssl x509 -noout -serial -in "$CERT_FN"|cut -d'=' -f2)
+    # Transform it to decimal
+    CERT_SERIAL=$(echo -e "ibase=16;$CERT_SERIAL_HEXA"|bc -q)
+
+    # If the certificate Serial is the same, do nothing
+    if [[ "$CERT_SERIAL" == "$OCI_CERT_SERIAL" ]]
+    then
+        echo "Cowardly refusing to update the certificate in OCI with the same serial number."
+        exit 1
+    else
+        # Update teh certificate with new version
+        load_certifcate
+        oci certs-mgmt certificate update-certificate-by-importing-config-details --certificate-id $OCI_CERT_OCID --cert-chain-pem "$CHAIN" --certificate-pem "$CERT" --private-key-pem "$KEY"
+        exit 0
+    fi
+fi
+
+# Create new certificate
+load_certifcate
+oci certs-mgmt certificate create-by-importing-config --compartment-id "$COMPARTMENT" --cert-chain-pem "$CHAIN" --certificate-pem "$CERT" --name "$CERTIFICATE_NAME" --private-key-pem "$KEY"
